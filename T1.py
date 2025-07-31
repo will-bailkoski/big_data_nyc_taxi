@@ -57,7 +57,7 @@ def writer(records, target_dir, pickup_col, dropoff_col):
 
 def run_pipeline():
     base_input = Path("/d/hpc/projects/FRI/bigdata/data/Taxi")
-    base_output = Path("/d/hpc/projects/FRI/wb33355/T1/bonus")
+    base_output = Path("/d/hpc/projects/FRI/wb33355/T1")
     base_output.mkdir(exist_ok=True)
 
     for name, year_range, pickup_col, dropoff_col in get_dataset_meta():
@@ -69,8 +69,7 @@ def run_pipeline():
         if not files:
             print(f"⚠️ No files found for {name}")
             continue
-
-        files = files[:5]
+            
         # Pass pickup_col and dropoff_col here explicitly
         writer(files, target_folder, pickup_col, dropoff_col)
 if __name__ == "__main__":
