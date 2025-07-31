@@ -1,69 +1,77 @@
+from pathlib import Path
 import pyarrow as pa
 import pyarrow.parquet as pq
-from pathlib import Path
 
-# Base directories
-base_input = Path("/d/hpc/projects/FRI/bigdata/data/Taxi")
-base_output = Path("/d/hpc/projects/FRI/wb33355/T1")
-base_output.mkdir(parents=True, exist_ok=True)
+def get_dataset_meta():
+    return [
+        # name, valid years, pickup, dropoff
+        ("yellow", range(2012, 2026), "tpep_pickup_datetime", "tpep_dropoff_datetime"),
+        ("green", range(2016, 2026), "lpep_pickup_datetime", "lpep_dropoff_datetime"),
+        ("fhv", range(2016, 2026), "pickup_datetime", "dropoff_datetime"),
+        ("fhvhv", range(2019, 2026), "pickup_datetime", "dropoff_datetime")
+    ]
 
-# Settings per dataset
-settings = [
-    ("yellow", range(2012, 2026), "tpep_pickup_datetime", "tpep_dropoff_datetime"),
-    ("green", range(2016, 2026), "lpep_pickup_datetime", "lpep_dropoff_datetime"),
-    ("fhv", range(2016, 2026), "pickup_datetime", "dropoff_datetime"),
-    ("fhvhv", range(2019, 2026), "pickup_datetime", "dropoff_datetime"),
-]
+def collect_files(source_dir, prefix, valid_years):
+    all_files = list(source_dir.glob(f"{prefix}_tripdata_*.parquet"))
+    return list(filter(lambda f: any(str(y) in f.name for y in valid_years), all_files))
 
-# Process each dataset type
-for name, years, pickup_col_raw, dropoff_col_raw in settings:
-    print(f"\n=== Handling {name.upper()} dataset ===")
-    subfolder = base_output / f"{name}_partitioned"
-    subfolder.mkdir(exist_ok=True)
+def standardize_columns(tbl, pickup_key, dropoff_key):
+    original = tbl.schema.names
+    renamed = []
+    for col in original:
+        low = col.lower()
+        if low == pickup_key:
+            renamed.append("pickup_datetime")
+        elif low == dropoff_key:
+            renamed.append("dropoff_datetime")
+        else:
+            renamed.append(low)
+    return tbl.rename_columns(renamed)
 
-    for item in sorted(base_input.iterdir()):
-        fname = item.name
-        if not (fname.startswith(f"{name}_tripdata_") and fname.endswith(".parquet")):
-            continue
-        if not any(str(y) in fname for y in years):
-            continue
+def annotate_by_year(tbl):
+    extracted = pa.compute.year(tbl["pickup_datetime"])
+    return tbl.append_column("year", extracted)
 
-        print(f"[{name.upper()}] Reading {fname}")
+def writer(records, target_dir, pickup_col, dropoff_col):
+    for path in records:
         try:
-            data = pq.read_table(item)
-            original_fields = data.schema.names
-            columns_lower = {c.lower(): c for c in original_fields}
-
-            # Abort if required fields are not present
-            if pickup_col_raw.lower() not in columns_lower or dropoff_col_raw.lower() not in columns_lower:
-                print(f"⚠️ Skipping {fname} due to missing required columns.")
+            table = pq.read_table(path)
+            field_map = {name.lower(): name for name in table.schema.names}
+            if pickup_col.lower() not in field_map or dropoff_col.lower() not in field_map:
+                print(f"⚠️ Skipping {path.name} due to column absence")
                 continue
 
-            # Map and rename
-            updated_columns = []
-            for col in original_fields:
-                key = col.lower()
-                if key == pickup_col_raw.lower():
-                    updated_columns.append("pickup_datetime")
-                elif key == dropoff_col_raw.lower():
-                    updated_columns.append("dropoff_datetime")
-                else:
-                    updated_columns.append(key)
-            data = data.rename_columns(updated_columns)
+            normalized = standardize_columns(table, pickup_col.lower(), dropoff_col.lower())
+            enriched = annotate_by_year(normalized)
 
-            # Extract and append year column
-            pickup_dt = data["pickup_datetime"]
-            year_info = pa.compute.year(pickup_dt)
-            data = data.append_column("year", year_info)
-
-            # Save partitioned by year
             pq.write_to_dataset(
-                data,
-                root_path=subfolder,
+                enriched,
+                root_path=target_dir,
                 partition_cols=["year"],
                 row_group_size=2_000_000,
                 existing_data_behavior="overwrite_or_ignore"
             )
-            print(f"[{name.upper()}] Finished and saved")
-        except Exception as err:
-            print(f"[{name.upper()}] ⚠️ Failed on {fname}: {err}")
+            print(f"✅ Wrote: {path.name}")
+        except Exception as ex:
+            print(f"💥 Error on {path.name}: {ex}")
+
+def run_pipeline():
+    base_input = Path("/d/hpc/projects/FRI/bigdata/data/Taxi")
+    base_output = Path("/d/hpc/projects/FRI/wb33355/T1/bonus")
+    base_output.mkdir(exist_ok=True)
+
+    for name, year_range, pickup_col, dropoff_col in get_dataset_meta():
+        print(f"\n🚕 Dataset: {name.upper()}")
+        target_folder = base_output / f"{name}_partitioned"
+        target_folder.mkdir(exist_ok=True)
+
+        files = collect_files(base_input, name, year_range)
+        if not files:
+            print(f"⚠️ No files found for {name}")
+            continue
+
+        files = files[:5]
+        # Pass pickup_col and dropoff_col here explicitly
+        writer(files, target_folder, pickup_col, dropoff_col)
+if __name__ == "__main__":
+    run_pipeline()
