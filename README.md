@@ -1,2 +1,4 @@
 # big_data_nyc_taxi
-Archive of the final submmission for the Big Data Final Project
+Archive of the final submmission for the Big Data Final Project.
+
+Work completed by Philipp Liehe and Will Bailkoski.
